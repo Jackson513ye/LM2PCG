@@ -1140,7 +1140,7 @@ When data is insufficient:
         has_specific_codes = bool(valid_codes)
 
         tool_keywords = {
-            'CLR': ['color', 'colour', 'dominant color'],
+            'CLR': ['color', 'colour', 'colors', 'colours', 'dominant color', 'dominant colors'],
             'BBD': ['distance between', 'how far apart', 'separation'],
             'VOL': ['volume', 'mesh volume', 'closed volume'],
             'VIS': ['show', 'visualize', 'display', 'point cloud', '3d model']
@@ -1223,9 +1223,30 @@ When data is insufficient:
                 if tool_to_run == 'CLR':
                     result = self.api_wrapper.analyze_dominant_color(code)
                     if result and hasattr(result, 'components'):
-                        color_descs = [
-                            f"[W: {comp.get('weight', 0):.2f}, RGB: {tuple(int(x) for x in comp.get('mean', [0, 0, 0])[:3])}]"
-                            for comp in result.components]
+                        color_descs = []
+                        for comp in result.components:
+                            # Parse the component line string
+                            # Format: "component 0: weight=0.625998, mean=[82.4346, 93.5924, 127.169], var=[...]"
+                            line = comp.get('line', '')
+                            try:
+                                # Extract weight
+                                weight_match = re.search(r'weight=([\d.]+)', line)
+                                weight = float(weight_match.group(1)) if weight_match else 0.0
+                                
+                                # Extract mean RGB values
+                                mean_match = re.search(r'mean=\[([\d., ]+)\]', line)
+                                if mean_match:
+                                    mean_str = mean_match.group(1)
+                                    mean_values = [float(x.strip()) for x in mean_str.split(',')]
+                                    rgb = tuple(int(x) for x in mean_values[:3])
+                                else:
+                                    rgb = (0, 0, 0)
+                                
+                                color_descs.append(f"[W: {weight:.2f}, RGB: {rgb}]")
+                            except (AttributeError, ValueError, IndexError) as e:
+                                print(f"⚠️ Error parsing color component: {e}")
+                                continue
+                        
                         desc = f"CLR ({code}): Found {result.M} colors: {', '.join(color_descs)}" if color_descs else f"CLR ({code}): Analysis ok, no colors."
                     else:
                         desc = f"CLR ({code}): Analysis failed."
