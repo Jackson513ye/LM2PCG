@@ -235,3 +235,6 @@ class AiApiWrapper:
             print(f"❌ VIS tool execution returned no results for codes: {codes}")
             return VisOutput(status="error", error="Tool execution failed or produced no output.", objects=codes)
 
+
+if __name__ == "__main__":
+    print("✅ ai_api_wrapper.py executed successfully - Done!")

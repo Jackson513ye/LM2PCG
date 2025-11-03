@@ -146,12 +146,82 @@ class FinalSpatialAIAgent:
                     0).astype(int)
 
             print(f"✅ Found {len(self.floors_df)} floors and {len(self.rooms_df)} rooms in the database.")
+            
+            # Print summary table
+            self._print_database_summary()
 
         except pd.io.sql.DatabaseError as e:
             print(f"❌ Database error loading initial data: {e}")
         except Exception as e:
             print(f"❌ Unexpected error loading initial data: {e}")
             traceback.print_exc()
+
+    def _print_database_summary(self):
+        """Prints a summary table of all floors and rooms in the database."""
+        if self.rooms_df.empty:
+            print("\n⚠️ No rooms data available for summary.\n")
+            return
+        
+        print("\n" + "=" * 95)
+        print("📊 DATABASE SUMMARY")
+        print("=" * 95)
+        
+        # Group by floor
+        if 'floor_number' in self.rooms_df.columns:
+            floors = sorted(self.rooms_df['floor_number'].unique())
+            
+            for floor_num in floors:
+                floor_rooms = self.rooms_df[self.rooms_df['floor_number'] == floor_num].sort_values('room_id')
+                
+                # Get floor name
+                floor_name = f"floor_{floor_num}"
+                if not self.floors_df.empty and 'floor_name' in self.floors_df.columns:
+                    floor_match = self.floors_df[self.floors_df['floor_number'] == floor_num]
+                    if not floor_match.empty:
+                        floor_name = floor_match.iloc[0]['floor_name']
+                
+                print(f"\n🏢 FLOOR {floor_num} ({floor_name})")
+                print("-" * 95)
+                print(f"{'ID':<6} {'Room Code':<15} {'Room Type':<20} {'Objects':<10} {'Panoramas':<12} {'Planes CSV':<12}")
+                print("-" * 95)
+                
+                for _, room in floor_rooms.iterrows():
+                    room_id = room.get('room_id', '?')
+                    room_name = room.get('room_name', 'unknown')
+                    room_type = room.get('room_type', 'unknown')
+                    
+                    # Count objects in this room
+                    try:
+                        obj_count = pd.read_sql_query(
+                            "SELECT COUNT(*) as count FROM objects WHERE room_id = ?",
+                            self.conn,
+                            params=(room_id,)
+                        ).iloc[0]['count']
+                    except:
+                        obj_count = 0
+                    
+                    # Count panoramas/images in this room
+                    try:
+                        pano_count = pd.read_sql_query(
+                            "SELECT COUNT(*) as count FROM images WHERE room_id = ?",
+                            self.conn,
+                            params=(room_id,)
+                        ).iloc[0]['count']
+                        pano_display = f"{pano_count} images"
+                    except:
+                        pano_count = 0
+                        pano_display = "0 images"
+                    
+                    # Check for planes CSV file
+                    planes_csv_status = "❌ Missing"
+                    planes_csv_path = f"output2/floor_{floor_num}/{room_name}/planes_data.csv"
+                    
+                    if os.path.exists(planes_csv_path):
+                        planes_csv_status = "✅ Present"
+                    
+                    print(f"{room_id:<6} {room_name:<15} {room_type:<20} {obj_count:<10} {pano_display:<12} {planes_csv_status:<12}")
+        
+        print("=" * 95 + "\n")
 
     def _set_initial_room_context(self):
         """Sets the initial room context, preferring a room with objects."""
@@ -207,25 +277,27 @@ class FinalSpatialAIAgent:
         """Parses 'room_XXX [on floor_Y]' or room name like 'kitchen' references from the query."""
         query_lower = query.lower()
 
-        # Pattern 0: room code format (e.g., "0-4", "show 0-2", "room 1-3")
-        # This matches floor-room code like "0-4" meaning floor 0, room 4
-        # Use negative lookahead to avoid matching 3-part object codes like "0-4-12"
-        pattern0 = r'\b(\d+)-(\d+)\b(?!-\d+)'
-        match0 = re.search(pattern0, query_lower)
-        if match0:
-            floor_num_int = int(match0.group(1))
-            room_num_int = int(match0.group(2))
-            room_num_str = str(room_num_int).zfill(3)
-            print(f"   Parser found ref: room code {match0.group(1)}-{match0.group(2)} -> room {room_num_str} on floor {floor_num_int}")
-            return (room_num_str, floor_num_int)
-
-        # Pattern 1: room_XXX on floor_Y (flexible spacing)
+        # Pattern 1: room_XXX on floor_Y (flexible spacing) - CHECK THIS FIRST (most specific)
         pattern1 = r'room[\s_]?(\d+)\s*(?:on\s+)?floor[\s_]?(\d+)'
         match1 = re.search(pattern1, query_lower)
         if match1:
             room_num_str = match1.group(1).zfill(3)
             floor_num_int = int(match1.group(2))
             print(f"   Parser found ref: room {room_num_str} on floor {floor_num_int}")
+            return (room_num_str, floor_num_int)
+
+        # Pattern 0: room code format (e.g., "0-4", "show 0-2", "room 1-3")
+        # This matches floor-room code like "0-4" meaning floor 0, room 4
+        # IMPORTANT: Use negative lookbehind and lookahead to avoid matching object codes
+        # Should NOT match: "9-9-9" (object code), "what color is 0-3-0" (object code)
+        # Should match: "show room 0-2", "in 1-3", "display 0-4"
+        pattern0 = r'(?:room|show|display|visualize|in|floor)\s+(\d+)-(\d+)\b(?!-\d+)'
+        match0 = re.search(pattern0, query_lower)
+        if match0:
+            floor_num_int = int(match0.group(1))
+            room_num_int = int(match0.group(2))
+            room_num_str = str(room_num_int).zfill(3)
+            print(f"   Parser found ref: room code {match0.group(1)}-{match0.group(2)} -> room {room_num_str} on floor {floor_num_int}")
             return (room_num_str, floor_num_int)
 
         # Pattern 2: in room_XXX (infers floor from current context if possible)
@@ -348,6 +420,20 @@ class FinalSpatialAIAgent:
         except Exception as e:
             print(f"❌ Error getting room summary for room {room_id}: {e}")
             return {}
+
+    def _get_available_rooms_list(self) -> List[str]:
+        """Returns a list of available room codes in the format 'room_XXX (floor Y)'."""
+        if self.rooms_df.empty:
+            return []
+        
+        available = []
+        for _, row in self.rooms_df.iterrows():
+            room_name = row.get('room_name', 'unknown')
+            floor_num = row.get('floor_number', '?')
+            room_type = row.get('room_type', '')
+            type_str = f" ({room_type})" if room_type and room_type != 'unknown' else ""
+            available.append(f"{room_name} on floor {floor_num}{type_str}")
+        return available
 
     def _get_all_rooms_data(self) -> List[Dict[str, Any]]:
         """Retrieves summaries for all rooms, calculating aggregate stats."""
@@ -593,9 +679,22 @@ The following section contains the room(s) relevant to your query. Use this data
                 for i, rd in enumerate(room_data, 1):
                     room = rd.get('room', {})
                     objects = rd.get('objects', [])
+                    planes = rd.get('planes', [])
 
                     prompt += f"\n{i}. ROOM: {room.get('room_name', 'N/A')} (Floor: {room.get('floor_number', 'N/A')}, Type: {room.get('room_type', 'unknown')})\n"
-                    prompt += f"   - Objects: {len(objects)}, Wall Area: {room.get('wall_area_total', 0.0):.2f}m²\n"  # Use actual object count
+                    total_area = room.get('total_area', 0.0) or 0.0
+                    prompt += f"   - Floor Area: {total_area:.2f}m², Objects: {len(objects)}\n"  # Show floor area and object count
+                    
+                    # Add plane area summaries for cost calculations
+                    if planes:
+                        plane_summary = {}
+                        for plane in planes:
+                            plane_class = plane.get('plane_class', 'unknown')
+                            plane_summary[plane_class] = plane_summary.get(plane_class, 0) + plane.get('area', 0.0)
+                        if plane_summary:
+                            prompt += f"   - Plane Areas: "
+                            plane_strs = [f"{cls.upper()}:{area:.2f}m²" for cls, area in plane_summary.items()]
+                            prompt += ", ".join(plane_strs) + "\n"
 
                     # *** ALWAYS ADD FULL OBJECT INVENTORY ***
                     if objects:
@@ -629,51 +728,133 @@ The following section contains the room(s) relevant to your query. Use this data
 RESPONSE GUIDELINES (CRITICAL - READ CAREFULLY)
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. DATA-DRIVEN ACCURACY
+1. STAY WITHIN SCOPE (CRITICAL)
+   ⚠️ YOU ARE A SPATIAL ANALYSIS AGENT - ONLY ANSWER QUESTIONS ABOUT ROOMS AND OBJECTS ⚠️
+   
+   ACCEPTABLE QUERIES (IN SCOPE):
+   • Room layouts, dimensions, areas, volumes
+   • Object locations, dimensions, colors, distances
+   • Furniture counts, types, arrangements
+   • Visual appearance, materials, textures, decor (using panoramas)
+   • Spatial relationships, proximity, access patterns
+   • Plane data (walls, floors, ceilings)
+   • Cost estimates for renovations (painting walls, flooring, etc.) based on spatial data
+   
+   UNACCEPTABLE QUERIES (OUT OF SCOPE):
+   • Cooking recipes, food preparation, general knowledge
+   • Weather, news, current events
+   • Personal advice, jokes, entertainment
+   • Tasks unrelated to architectural/spatial analysis
+   
+   RESPONSES:
+   • If query is OUT OF SCOPE → "I can only help with spatial analysis of rooms and objects in this building. Please ask about room layouts, furniture locations, distances, or visualizations."
+   • If room/object DOESN'T EXIST → "That room/object doesn't exist in the database. Available rooms are: [list room codes]."
+   • If data NOT AVAILABLE → "I don't have that information in the spatial database."
+
+2. DATA-DRIVEN ACCURACY
    • Base ALL answers on provided room data or API results
    • NEVER invent dimensions, object counts, or spatial relationships
    • If data is missing: state "Data not available" rather than guessing
    • Show your sources: "Based on object 0-3-5 data..." or "According to room 007 summary..."
 
-2. SEMANTIC ROOM TYPES
+3. SEMANTIC ROOM TYPES
    • Use the 'room_type' field (e.g., 'kitchen', 'bedroom') for room category questions
    • When query mentions "kitchen", look for rooms where room_type='kitchen'
 
-3. COLOR INTERPRETATION (CRITICAL FOR CLR TOOL)
-   • For CLR results, YOU MUST translate RGB values into descriptive color names
-   • DO NOT just say "RGB (180, 195, 185)" - interpret it as "soft sage green"
-   • Consider both hue AND saturation/brightness for accurate descriptions
+4. COLOR INTERPRETATION (CRITICAL FOR CLR TOOL)
+   ⚠️ ALWAYS show RGB values first, THEN interpret the color name ⚠️
+   
+   • ALWAYS include RGB values: "RGB (104, 106, 104)" 
+   • THEN provide descriptive color name based on RGB analysis
+   • Use this guide for interpretation:
+     - R>200, G>200, B>200 → whites/light colors
+     - R<50, G<50, B<50 → blacks/dark colors
+     - R>G and R>B → reds, oranges, pinks
+     - G>R and G>B → greens, limes, olives
+     - B>R and B>G → blues, purples, violets
+     - R≈G≈B → grays (specify light/medium/dark)
+     - R≈G>B → yellows, golds, browns
+     - R≈B>G → magentas, purples
+   • Consider saturation: low difference between RGB → gray/muted colors
+   
+   Example: "RGB (104, 106, 104) - a medium gray with very low saturation"
+   Example: "RGB (180, 195, 185) - a soft sage green with muted tones"
+   Example: "RGB (220, 180, 160) - a peachy beige color"
 
-4. SHOW YOUR WORK
+5. SHOW YOUR WORK
    • Include calculations or reasoning steps
    • Reference specific data sources: "Based on object 0-3-0 data..."
    • For comparisons, show all values before conclusion
 
-5. CLEAR STRUCTURE
-   • Use bullet points for lists
-   • Use numbered lists for steps or rankings
-   • Use formatting for emphasis (**, -, •)
-   • Group related information logically
+6. CONVERSATIONAL FORMATTING (MANDATORY)
+   ⚠️ CRITICAL: Write in SHORT, NATURAL sentences - NO bold, NO tables, NO asterisks ⚠️
+   
+   REQUIRED FORMATTING RULES:
+   • Write like talking to a person - use plain English
+   • Keep sentences SHORT (under 20 words each)
+   • Use simple bullet points (- or •) for lists only when needed
+   • NO markdown formatting like **bold** or *italics*
+   • Add blank lines between sections for readability
+   • Include units naturally: "2.5 meters", "15.3 square meters", "0.42 cubic meters"
+   
+   FORMATTING EXAMPLES:
+   
+   Simple Query:
+   "The kitchen has 1 chair. Its code is 0-2-4. It measures 0.45m × 0.52m × 0.91m."
+   
+   List Format (2-4 items):
+   The bedroom has these tables:
+   - Table 1 (code 1-4-1) is 0.44m × 0.19m, located at (1.4m, 6.3m)
+   - Table 2 (code 1-4-2) is 0.30m × 0.30m, located at (1.5m, 6.3m)
+   
+   Comparison Format (NO tables):
+   I checked the chairs in each room.
+   Room 001 has 4 chairs. The widest is 0.70 meters.
+   Room 002 has 1 chair. It's 0.45 meters wide.
+   Room 003 has 5 chairs. The widest is 0.71 meters.
+   
+   The widest chair is in room 003 at 0.71 meters.
+   
+   Multi-Section Format:
+   The chair (code 0-2-4) and door (code 0-2-7) are 0.93 meters apart.
+   
+   The chair is at coordinates (5.2m, 3.1m).
+   The door is at coordinates (5.5m, 2.8m).
+   
+   They are very close to each other. This makes it easy to reach the exit from the seating area.
 
-6. NATURAL LANGUAGE
+7. NATURAL LANGUAGE
    • DO NOT repeat raw tool commands in responses
    • DO NOT show API output structures like JSON
    • Synthesize technical data into conversational explanations
    • Example: Instead of "CLR (0-2-3): RGB (180, 195, 185)" say "The object has a soft sage green color"
 
-7. VISUALIZATION ACKNOWLEDGMENT
-   • When visualization link is provided, inform user it's available
-   • Explain what they can see/interact with
-   • Do NOT repeat the raw URL structure
-   • Example: "I've prepared a 3D visualization of the kitchen for you. The viewer shows the room shell along with all furniture objects. You can rotate, zoom, and select individual objects."
+8. VISUALIZATION ACKNOWLEDGMENT (CRITICAL)
+   ⚠️ WHEN YOU SEE [VIEWER_URL]...[/VIEWER_URL] IN THE TOOL RESULT, YOU MUST INCLUDE THE LINK ⚠️
+   
+   • Extract the URL between [VIEWER_URL] and [/VIEWER_URL] tags
+   • Include it in your response with simple introduction
+   • Example: "I've prepared a 3D view for you. You can see it here: http://localhost:5173/?manifest=room_0_3.json"
+   • Keep explanation short: tell them what they can do (rotate, zoom, select)
+   • DO NOT say "I've prepared" without showing the actual link
 
-8. SPATIAL CONTEXT & REASONING
+9. HANDLING TOOL FAILURES
+   ⚠️ When a tool fails (CLR, BBD, VIS, VOL), it means the object/room DOESN'T EXIST ⚠️
+   
+   • If you see "failed" or "FileNotFoundError" or "No assets found" in tool result → Object doesn't exist
+   • Response: "That object doesn't exist in the database."
+   • DO NOT offer alternative help or suggestions
+   • DO NOT try to provide information about non-existent objects
+   
+   Example: Query "What color is object 9-9-9?" + Tool fails → "Object 9-9-9 doesn't exist in the database."
+
+10. SPATIAL CONTEXT & REASONING
    • Provide meaningful spatial relationships (proximity, arrangement)
    • Describe access patterns: "The door connects the kitchen to the hallway"
    • Note density: "This is a sparsely furnished room with only 4 objects in 25m²"
    • Explain functionality: "This layout suggests a dining area (table + 4 chairs)"
 
-9. STRUCTURED RESPONSE FORMATS
+11. STRUCTURED RESPONSE FORMATS
    
    For Lists/Comparisons:
    • Kitchen: 3 chairs, 1 table, 25.4m²
@@ -691,11 +872,6 @@ RESPONSE GUIDELINES (CRITICAL - READ CAREFULLY)
    Bedroom: 18.70m²
    ─────────────────────
    Total: 86.20m²
-
-10. ERROR HANDLING
-    • Explain clearly what went wrong
-    • Suggest alternatives: "Color analysis failed, but I can describe the object based on its type"
-    • Offer related operations: "Volume unavailable, but I can provide bounding box dimensions"
 
 ═══════════════════════════════════════════════════════════════════════════════
 CRITICAL INSTRUCTIONS
@@ -741,15 +917,88 @@ COMPARATIVE ANALYSIS (Multi-Room Queries):
 - Patterns: "All rooms on floor 0 have ceiling height 2.8m"
 
 ═══════════════════════════════════════════════════════════════════════════════
+COST ESTIMATION CAPABILITIES
+═══════════════════════════════════════════════════════════════════════════════
+
+When asked about renovation costs (painting, flooring, etc.), provide budget estimates using:
+
+PAINTING WALLS:
+1. Calculate wall area from planes data (sum all 'wall' class planes for the room/house)
+2. Use typical cost ranges based on your training data:
+   • Basic paint: $2-4 per m² (materials + labor)
+   • Mid-range paint: $5-8 per m²
+   • Premium paint: $10-15 per m²
+3. Show calculation breakdown:
+   "Kitchen Wall Area: The kitchen has X m² of wall surface (based on planes data).
+   
+   Budget Estimate:
+   • Low-end (basic paint): X m² × $3/m² = $Y
+   • Mid-range (quality paint): X m² × $6.50/m² = $Z
+   • High-end (premium paint): X m² × $12/m² = $W
+   
+   Reasoning: These estimates include paint materials and labor. The kitchen walls appear to be in [describe condition from panorama if available]. Consider mid-range paint for kitchens due to moisture and cleaning needs."
+
+FLOORING:
+1. Use room's total_area field (calculated from floor planes)
+2. Apply typical flooring costs:
+   • Laminate: $20-40 per m²
+   • Vinyl/LVP: $30-60 per m²
+   • Hardwood: $60-120 per m²
+   • Tile: $40-80 per m²
+3. Show calculation:
+   "House Floor Area: Total floor area is X m² across Y rooms.
+   
+   Budget Estimate:
+   • Laminate flooring: X m² × $30/m² = $Y
+   • Vinyl plank: X m² × $45/m² = $Z
+   • Hardwood: X m² × $90/m² = $W
+   • Ceramic tile: X m² × $60/m² = $V
+   
+   Reasoning: Based on the current flooring visible in panoramas [describe what you see], I'd recommend [option] because [reason]. This estimate includes materials, underlayment, and installation labor."
+
+GENERAL GUIDELINES:
+• Always show the area calculation first (from planes/room data)
+• Provide 3 price tiers (low/mid/high) when possible
+• Include reasoning based on room type, current condition (from images), and use case
+• Mention what's included (materials, labor, preparation)
+• Note regional variations: "Prices may vary by location; these are typical ranges"
+• Consider room-specific factors (e.g., kitchens need washable paint, bathrooms need moisture-resistant flooring)
+
+═══════════════════════════════════════════════════════════════════════════════
 LIMITATIONS & CONSTRAINTS
 ═══════════════════════════════════════════════════════════════════════════════
 
 Be transparent about system boundaries:
 • No Real-Time Sensing: Data is from previous scans, not live
-• Geometric Only: Cannot infer materials without visual analysis
-• Tool Dependencies: Volume/Color require successful reconstruction
+• Visual Analysis Available: When panorama images are provided, you CAN analyze materials, finishes, textures, colors, and appearances
+• Tool Dependencies: Volume/Color from point clouds require successful reconstruction
 • Scope Constraints: Cannot modify room layouts or add objects
 • Precision: Measurements accurate to ±0.01m typically
+
+DUAL-SOURCE ANALYSIS (CRITICAL - When BOTH tool results AND images are available):
+⚠️ ALWAYS provide COMPARATIVE analysis showing BOTH perspectives ⚠️
+
+When you have BOTH tool results (CLR/geometric data) AND panorama images:
+1. First show the TOOL/CSV data: "Based on point cloud analysis: RGB (104, 106, 104) - medium gray"
+2. Then show PANORAMA observations: "From the panorama images: The object appears to have..."
+3. Compare and synthesize: "The geometric data shows gray tones, which is consistent with the muted appearance in the panoramas"
+
+Example format for color queries with both sources:
+"Point Cloud Analysis: The object has RGB (104, 106, 104), which is a medium gray covering 57% of the surface.
+
+Panorama Observation: Looking at the room images, the object appears to blend with the neutral color scheme of the space. The lighting and surrounding context show it has a subtle, non-reflective finish.
+
+Conclusion: Both sources confirm a neutral gray color palette for this object."
+
+When visual queries are asked WITH images (no tool data):
+• Analyze the panorama images to describe materials, finishes, colors, textures
+• Describe what you see: "The kitchen has white painted walls, wooden cabinets, and tile flooring"
+• Be specific about visual details visible in the images
+
+When VIS tool provides 3D viewer link AND panorama images are present:
+• FIRST answer the visual analysis question using the panorama images
+• THEN mention the 3D viewer link at the end as an additional resource
+• DO NOT reject the query just because VIS was triggered - the panoramas still allow visual analysis
 
 When data is insufficient:
 • State clearly: "I don't have sufficient data to answer this"
@@ -765,7 +1014,8 @@ When data is insufficient:
         visual_keywords = [
             'appearance', 'look', 'style', 'design', 'decor', 'aesthetic',
             'finish', 'material', 'texture', 'lighting', 'ambiance', 'see',
-            'visible', 'describe', 'visual', 'picture', 'photo', 'image', 'panorama'
+            'visible', 'describe', 'visual', 'picture', 'photo', 'image', 'panorama',
+            'color', 'colour', 'colors', 'colours', 'paint', 'painted', 'shade', 'tint', 'hue'
         ]
         query_lower = query.lower()
         return any(re.search(r'\b' + keyword + r'\b', query_lower) for keyword in visual_keywords)
@@ -858,16 +1108,25 @@ When data is insufficient:
         return matching_codes
 
     def _find_classes_in_query(self, query: str) -> List[str]:
-        """Finds known object class keywords mentioned in the query."""
+        """Finds known object class keywords mentioned in the query (handles plurals)."""
         class_keywords = [
             'chair', 'table', 'window', 'door', 'shell', 'couch', 'plant',
             'monitor', 'curtain', 'sofa', 'desk', 'cabinet'
         ]
         found_classes = []
         query_lower = query.lower()
+        
         for keyword in class_keywords:
+            # Check singular form
             if re.search(r'\b' + re.escape(keyword) + r'\b', query_lower):
                 found_classes.append(keyword)
+                continue  # Skip plural check if singular already found
+            
+            # Check plural form (simple: add 's')
+            plural = keyword + 's'
+            if re.search(r'\b' + re.escape(plural) + r'\b', query_lower):
+                found_classes.append(keyword)  # Add singular form
+        
         return list(set(found_classes))
 
     def _parse_and_execute_tool(self, user_query: str, tool_context_room_id: Optional[int]) -> Optional[
@@ -1113,6 +1372,14 @@ When data is insufficient:
                 explicitly_referenced_room_id = detected_room_id
             else:
                 print(f"⚠ Room reference '{room_num}/{floor_num}' not found.")
+                # Return early with error message for non-existent rooms
+                available_rooms = self._get_available_rooms_list()
+                return {
+                    "error": f"Room {room_num} on floor {floor_num} doesn't exist in the database.",
+                    "available_rooms": available_rooms,
+                    "query": user_query,
+                    "response": f"That room doesn't exist in the database. Available rooms are: {', '.join(available_rooms)}"
+                }
 
         if scope_type == "SINGLE_ROOM":
             if explicitly_referenced_room_id is not None:
@@ -1206,28 +1473,39 @@ When data is insufficient:
             images_used = False;
             room_images = []
             is_visual_query = self._needs_visual_analysis(user_query)
-            can_use_visuals = scope.startswith("room_") and self.use_images and target_room_ids
+            # Allow images for single-room queries OR multi-room queries that have a specific room context
+            can_use_visuals = self.use_images and (
+                (scope.startswith("room_") and target_room_ids) or 
+                (scope.startswith("multi_room") and tool_context_room_id is not None)
+            )
 
             current_user_content_str = user_query
             if tool_result_text:
                 current_user_content_str = f"{tool_result_text}\n\nUser Query: {user_query}"
                 print("🛠️ Tool result added to prompt.")
-                if "CLR" in tool_result_text and "failed" in tool_result_text and is_visual_query and can_use_visuals:
-                    print("⚠️ CLR failed, attempting visual fallback...")
-                    room_images = self._get_room_images(target_room_ids[0])
-                    if room_images:
-                        current_user_content_str = f"[Tool Failure: CLR failed. Image Instead.]\n\nUser Query: {user_query}"
-                        images_used = True;
-                        print(f"   ✅ Added {len(room_images)} images for fallback.")
-                    else:
-                        print("   ❌ No images for visual fallback.")
+                # Also add images for visual queries even when tools succeeded
+                if is_visual_query and can_use_visuals:
+                    print("ℹ️ Visual query detected, adding images alongside tool results...")
+                    # Use appropriate room ID based on scope
+                    img_room_id = target_room_ids[0] if target_room_ids else tool_context_room_id
+                    if img_room_id:
+                        room_images = self._get_room_images(img_room_id)
+                        if room_images:
+                            images_used = True
+                            print(f"   ✅ Added {len(room_images)} images.")
+                        else:
+                            print("   ❌ No images found.")
             elif is_visual_query and can_use_visuals:
                 print("ℹ️ Visual query, adding images...")
-                room_images = self._get_room_images(target_room_ids[0])
-                if room_images:
-                    images_used = True; print(f"   ✅ Added {len(room_images)} images.")
-                else:
-                    print("   ❌ No images found.")
+                # Use appropriate room ID based on scope
+                img_room_id = target_room_ids[0] if target_room_ids else tool_context_room_id
+                if img_room_id:
+                    room_images = self._get_room_images(img_room_id)
+                    if room_images:
+                        images_used = True
+                        print(f"   ✅ Added {len(room_images)} images.")
+                    else:
+                        print("   ❌ No images found.")
 
             # --- 6. Finalize Message List ---
             if images_used and room_images:
@@ -1426,16 +1704,39 @@ def demo_agent():
             print("\nℹ️ No initial room context.")
         print("—" * 60)
 
-        test_queries = [  # Shortened list for brevity, keeping relevant cases
-            "What is the dominant color of the couch 0-3-0 in room 3 floor 0?",
-            "What is the distance between chair 0-2-4 and shell 0-2-3 in room 2 floor 0?",
-            # "Show me the couch 0-3-0 in room 3 floor 0",
-            # "Visualize the chairs in room 2 floor 0",
-            # "Display the current room",
-            "How many chairs are in the kitchen?",
-            "List the tables in the bedroom.",
-            "which room has the highest width of the chair",
-            "What is the distance between the chair and the door in the kitchen?",  # Should trigger BBD NLP
+        test_queries = [
+            # === BASIC SPATIAL QUERIES ===
+            "What is the dominant color of the couch 0-3-0 in room 3 floor 0?",  # CLR tool
+            "What is the distance between chair 0-2-4 and shell 0-2-3 in room 2 floor 0?",  # BBD tool
+            "Show me the couch 0-3-0 in room 3 floor 0",  # VIS tool
+            "Visualize the chairs in room 2 floor 0",  # VIS with NLP
+            "Display the current room",  # VIS current context
+            
+            # === NLP QUERIES ===
+            "How many chairs are in the kitchen?",  # Room type matching
+            "List the tables in the bedroom.",  # Room type + object class
+            "which room has the highest width of the chair",  # Multi-room comparison
+            "What is the distance between the chair and the door in the kitchen?",  # BBD NLP
+            
+            # === NEW: ADDITIONAL SPATIAL QUERIES ===
+            "What objects are in room 001 on floor 0?",  # List all objects
+            "Show me all the doors in the hallway",  # VIS with object class
+            "What is the area of the kitchen?",  # Room metadata
+            "What materials and finishes can you see in the kitchen panoramas?",  # Should use images
+            
+            # === NEW: COST ESTIMATION QUERIES ===
+            "What would it cost to paint the walls of the kitchen?",  # Cost estimation with area calculation
+            "How much to do flooring for the entire house?",  # Cost estimation for all rooms
+            
+            # === NEW: OUT OF SCOPE QUERIES (Should be rejected) ===
+            "What is the recipe for tiramisu?",  # Cooking - OUT OF SCOPE
+            "What's the weather today?",  # General knowledge - OUT OF SCOPE
+            "Tell me a joke",  # Entertainment - OUT OF SCOPE
+            
+            # === NEW: NON-EXISTENT DATA QUERIES (Should say doesn't exist) ===
+            "Show me room 999 on floor 5",  # Non-existent room
+            "What color is object 9-9-9?",  # Non-existent object
+            "How many windows are in the bathroom?",  # Non-existent room type
         ]
         for i, query in enumerate(test_queries, 1):
             print(f"\n{'=' * 80}\nQuery {i}: {query}\n{'—' * 80}")

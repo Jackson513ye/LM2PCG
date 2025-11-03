@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Environment variables
+.env
+.env.local
+
+# Database files
+*.db
+*.db.backup
+*.sqlite
+*.sqlite3
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# C++ build files
+*.o
+*.a
+CMakeFiles/
+cmake_install.cmake
+CMakeCache.txt
+Makefile
+
+# Point cloud data
+*.ply
+*.las
+*.laz
+*.pcd
+
+# Output directories
+output/
+output2/
+outputs/
+data/rooms/
+data/output/
+
+# Web viewer node modules and build
+web/pointcloud-viewer/node_modules/
+web/pointcloud-viewer/.vite/
+web/pointcloud-viewer/dist/
+web/pointcloud-viewer/public/data/
+web/pointcloud-viewer/public/manifests/
+
+# Logs
+*.log
+api_server.log
+bridge_server.log
+streamlit.log
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+tempCodeRunnerFile.py
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation (optional - uncomment if you don't want to track)
+# *.md
+# !README.md
+
+# Status reports
+*STATUS_REPORT.md
+*CHANGELOG.md

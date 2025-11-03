@@ -389,6 +389,7 @@ class SpatialDatabaseCorrect:
         """
         NEW: Import geometric plane data from planes_data.csv.
         FIX: Updated column mapping to use 'group_name' and 'class' from CSV.
+        ENHANCEMENT: Calculate and update room floor area from floor planes.
         """
         if not os.path.exists(csv_path):
             print(f"✗ Plane File not found: {csv_path}")
@@ -410,6 +411,8 @@ class SpatialDatabaseCorrect:
                     return 0
 
             count = 0
+            total_floor_area = 0.0
+            
             for _, row in df.iterrows():
                 self.cursor.execute("""
                     INSERT INTO planes (
@@ -426,9 +429,27 @@ class SpatialDatabaseCorrect:
                     float(row['area']),
                 ))
                 count += 1
+                
+                # Sum up floor plane areas to calculate room floor area
+                if str(row['class']).lower() == 'floor':
+                    total_floor_area += float(row['area'])
 
             self.conn.commit()
-            print(f"✓ Imported {count} planes from {os.path.basename(csv_path)}")
+            
+            # Update room's total_area with calculated floor area
+            if total_floor_area > 0:
+                self.cursor.execute("""
+                    UPDATE rooms 
+                    SET total_area = ? 
+                    WHERE room_id = ?
+                """, (total_floor_area, room_id))
+                self.conn.commit()
+                print(f"✓ Imported {count} planes from {os.path.basename(csv_path)}")
+                print(f"   📐 Calculated floor area: {total_floor_area:.2f}m²")
+            else:
+                print(f"✓ Imported {count} planes from {os.path.basename(csv_path)}")
+                print(f"   ⚠️  No floor planes found, area remains 0")
+            
             return count
 
         except Exception as e:
@@ -724,8 +745,8 @@ def populate_database_from_manifest():
             print(
                 f"    {status}{obj_status}{plane_status}{img_status} {room_name} (ID:{room_data['room_id_from_manifest']}, type:{room_data['room_type']}, images:{room_data['image_count']})")
 
-    # Populate database (no image requirement for manifest mode)
-    db.populate_from_structure(structure, require_images=False)
+    # Populate database (REQUIRE images - only add rooms with panoramas)
+    db.populate_from_structure(structure, require_images=True)
 
     # Show final overview
     print("\n" + "=" * 70)
