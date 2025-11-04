@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "title": "SAM2 Latest Result - 00028",
+  "description": "Latest SAM2 + mask2cluster output from room 00028",
+  "defaults": {
+    "pointSize": 4,
+    "colorMode": "file"
+  },
+  "items": [
+    {
+      "id": "sam2_cluster_latest",
+      "name": "SAM2 Cluster (101,078 points)",
+      "kind": "pointcloud",
+      "role": "cluster",
+      "source": {
+        "url": "/data/sam2_results/latest_cluster.ply"
+      },
+      "visible": true,
+      "style": {
+        "pointSize": 4,
+        "colorMode": "file"
+      },
+      "meta": {
+        "sourceFile": "00028_de skatting 81_2025-06-20_15.08.22_G11-0265_test.ply",
+        "timestamp": "2025-11-03 23:45"
+      }
+    }
+  ]
+}
